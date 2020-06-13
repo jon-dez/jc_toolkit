@@ -33,12 +33,14 @@ SOFTWARE.
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <iterator>
 #include <vector>
 #include <map>
 #include <memory>
+#include <condition_variable>
 
 // Open a file dialog window
 #ifdef WIN32
@@ -172,6 +174,21 @@ namespace JCToolkit {
             SPIColors preview_col;
             RumbleData rd;
             std::unique_ptr<IRSensor> ir{new IRSensor()};
+            ImGuiID spi_dir_explorer{ImGui::DirectoryExplorer::NewDirExplorer("test", std::filesystem::current_path().string())};
+            bool spi_dir_explorer_show{};
+            std::string spi_dir_explorer_file;
+            std::string prog_status_label;
+            float prog = 0.0f;
+            bool spi_restore_in_progress{};
+            MCU::RestoreNotif last_restore_notif{};
+            std::unique_ptr<std::mutex> spi_restore_lock{ std::make_unique<std::mutex>()};
+            std::unique_ptr<std::condition_variable> continue_spi_restore{ std::make_unique<std::condition_variable>() };
+            bool new_restore_response{};
+            int restore_response{-1};
+
+            void updateRestoreNotif(MCU::RestoreNotif notif);
+            int getSpiRestoreNotifResponse();
+            void setRestoreResponse(int response);
         };
         struct State {
             u8 device_info[10];
@@ -184,6 +201,84 @@ namespace JCToolkit {
         State state;
         User user;
     };
+
+    void ConSessData::User::updateRestoreNotif(MCU::RestoreNotif notif){
+
+        switch(notif & MCU::RestoreNotifTypeMask) {
+            case MCU::RestoreError:
+            case MCU::RestoreProgressError:
+            case MCU::RestoreSelectMode:{
+                std::unique_lock lock{ *spi_restore_lock };
+                last_restore_notif = notif; // UI Should reflect this restore notif.
+                new_restore_response = false; // The response waits on UI.
+                return;
+            }
+            case MCU::RestoreProgressUpdate:{
+                last_restore_notif = notif; // UI Should reflect this restore notif.
+                switch((notif & MCU::RestoreNotifCodeMask) >> 16){
+                    case MCU::RestoreBegin:
+                        prog_status_label = "Beginning";
+                    break;
+                    case MCU::RestoreFactoryCfg:
+                        prog_status_label = "Factory config @ 0x6000";
+                    break;
+                    case MCU::RestoreUserCal:
+                        prog_status_label = "User calibration @ 0x8000";
+                    break;
+                    case MCU::RestoreReinit:
+                        prog_status_label = "Reinit";
+                    break;
+                    case MCU::RestoreColors:
+                        prog_status_label = "Restoring colors";
+                    break;
+                    case MCU::RestoreSN:
+                        prog_status_label = "Restoring serial number";
+                    break;
+                    case MCU::RestoreLStickCal:
+                        prog_status_label = "Restoring left stick calibration";
+                    break;
+                    case MCU::RestoreRStickCal:
+                        prog_status_label = "Restoring right stick calibration";
+                    break;
+                    case MCU::RestoreSensorCal:
+                        prog_status_label = "Restoring sensor calibration";
+                    break;
+                    case MCU::RestoreEnd:
+                        prog_status_label = "Done!";
+                    break;
+                }
+                new_restore_response = true; // True, so no wait on the condition variable.
+                return;
+            }
+            default:{
+                last_restore_notif = notif; // UI Should reflect this restore notif.
+                prog_status_label =
+                    std::to_string(notif & MCU::RestoreNotifTypeMask)
+                    + " "
+                    + std::to_string((notif & MCU::RestoreNotifCodeMask) >> 16);
+
+                new_restore_response = true; // True, so no wait on the condition variable.
+                return;
+            }
+        }
+    }
+
+    int ConSessData::User::getSpiRestoreNotifResponse() {
+        std::unique_lock lock{ *spi_restore_lock };
+        continue_spi_restore->wait(lock, [&](){
+            return new_restore_response;
+        });
+        new_restore_response = false;
+        return restore_response;
+    }
+
+    void ConSessData::User::setRestoreResponse(int response){
+        std::unique_lock{ *spi_restore_lock };
+        restore_response = response;
+        new_restore_response = true;
+        continue_spi_restore->notify_one();
+    }
+
     namespace UI {
         void draw_controller(ConHID::ProdID con_type, const SPIColors& use_colors){
             // Detect which controller type label to use.
@@ -997,15 +1092,94 @@ namespace JCToolkit {
                 {"Modify Controller", [&](){
                     if(!_sess_ok())
                         return;
-                    auto that_res = ModifyController::show_dump_spi(sess_data_p->user.spi_dumping, sess_data_p->user.spi_bytes_dumped);
-                    
-                    switch(that_res){
-                        case ModifyController::SPIDumpAction::DoDump:
-                            con_p->dumpSPI("spi_dump.bin", sess_data_p->user.spi_dumping, sess_data_p->user.spi_bytes_dumped, sess_data_p->user.spi_cancel_dump);
-                        break;
-                        case ModifyController::SPIDumpAction::CancelDump:
-                            sess_data_p->user.spi_cancel_dump = true;
-                        break;
+                    if(ImGui::BeginTabBar("spi_backup_restore")){
+                        if(ImGui::BeginTabItem("SPI Backup")){
+                            auto that_res = ModifyController::show_dump_spi(sess_data_p->user.spi_dumping, sess_data_p->user.spi_bytes_dumped);
+                            
+                            switch(that_res){
+                                case ModifyController::SPIDumpAction::DoDump:
+                                    con_p->dumpSPI("spi_dump.bin", sess_data_p->user.spi_dumping, sess_data_p->user.spi_bytes_dumped, sess_data_p->user.spi_cancel_dump);
+                                break;
+                                case ModifyController::SPIDumpAction::CancelDump:
+                                    sess_data_p->user.spi_cancel_dump = true;
+                                break;
+                            }
+                            ImGui::EndTabItem();
+                        }
+                        if(ImGui::BeginTabItem("SPI Restore")){
+                            if(sess_data_p->user.spi_restore_in_progress){
+                                switch(sess_data_p->user.last_restore_notif & MCU::RestoreNotifTypeMask){
+                                    case MCU::RestoreProgressError:
+                                    case MCU::RestoreError:{
+                                        ImGui::Text("Status: %s", sess_data_p->user.prog_status_label.c_str());
+                                        ImGui::Text("An error occurred.");
+                                        if(ImGui::Button("Ok")) {
+                                            sess_data_p->user.setRestoreResponse(0);
+                                            sess_data_p->user.spi_restore_in_progress = false;
+                                        }
+                                    }
+                                    break;
+                                    case MCU::RestoreSelectMode:{
+                                        static int mode{};
+                                        const char* modes[]{
+                                            "Device Colors",
+                                            "Serial Number",
+                                            "User Calibration",
+                                            "OEM Calibration Reset",
+                                            "Full Restore"
+                                        };
+                                        bool mode_selected{};
+                                        if(ImGui::BeginCombo("Restoration Mode", modes[mode])){
+                                            for(int i=0; i < MCU::RestoreModeMax; i++){
+                                                if(ImGui::Selectable(modes[i])){
+                                                    mode = i;
+                                                    mode_selected = true;
+                                                }
+                                            }
+                                            ImGui::EndCombo();
+                                        }
+                                        if(ImGui::Button("Use Mode"))
+                                            sess_data_p->user.setRestoreResponse(mode);
+                                    }
+                                    break;
+                                    case MCU::RestoreProgressUpdate:
+                                        ImGui::Text("Status: %s", sess_data_p->user.prog_status_label.c_str());
+                                        ImGui::ProgressBar(sess_data_p->user.prog);
+                                        if(((sess_data_p->user.last_restore_notif & MCU::RestoreNotifCodeMask) >> 16) == MCU::RestoreEnd)
+                                            if(ImGui::Button("Ok")) {
+                                                sess_data_p->user.setRestoreResponse(0);
+                                                sess_data_p->user.spi_restore_in_progress = false;
+                                            }
+                                    break;
+                                }
+                            } else {
+                                if(ImGui::Button("Start SPI Restore"))
+                                    sess_data_p->user.spi_dir_explorer_show = true;
+                            }
+
+                            if(ImGui::DirectoryExplorer::OpenFileDialog(
+                                sess_data_p->user.spi_dir_explorer,
+                                sess_data_p->user.spi_dir_explorer_file,
+                                sess_data_p->user.spi_dir_explorer_show,
+                                ".bin"))
+                            {
+
+                                con_p->restoreSPI(
+                                    sess_data_p->user.spi_dir_explorer_file.c_str(),
+                                    [&user_sess = sess_data_p->user](MCU::RestoreNotif notif){
+                                        user_sess.updateRestoreNotif(notif);
+                                        return user_sess.getSpiRestoreNotifResponse();
+                                    },
+                                    [&user_sess = sess_data_p->user](float progress){
+                                        user_sess.prog = progress;
+                                    }
+                                );
+                                sess_data_p->user.spi_restore_in_progress = true;
+                                sess_data_p->user.new_restore_response = false;
+                            }
+                            ImGui::EndTabItem();
+                        }
+                        ImGui::EndTabBar();
                     }
 
                     if(ImGui::Button("Edit Colors")){

@@ -357,3 +357,23 @@ void ConSess::setPlayerLEDs(LEDs::LEDFlags led_flags){
     );
 }
 
+void ConSess::restoreSPI(const std::string& spi_filepath, std::function<int(int notif)> cb, std::function<void(float progress)> cb_prog){
+    ConSessManager::add_job(this->con,
+        CON_JOB(spi_filepath = spi_filepath, cb{ std::move(cb)}, cb_prog{ std::move(cb_prog) }) mutable {
+            CON_JOB_VARS
+
+            void* repr_cb = &cb;
+            MCU::restore_notify_cb behavior_cb = +[](int notif, void* repr){
+                return (*(std::function<int(int notif)>*)repr)(notif);
+            };
+
+            void* repr_cb_prog = &cb_prog;
+            MCU::restore_progress_cb behavior_prog_cb = +[](float progress, void *repr){
+                return (*(std::function<void(float)>*)repr)(progress);
+            };
+
+            MCU::spi_restore(&ct, con.prod_id, spi_filepath.c_str(), behavior_cb, behavior_prog_cb, repr_cb, repr_cb_prog);
+        }
+    );
+}
+

@@ -439,7 +439,539 @@ namespace MCU {
         fclose(f);
 
         return 0;
-}
+    }
+
+    struct SPIRestoreCTX {
+        CT* ct;
+        u8 backup_spi[SPI_SIZE];
+    };
+
+    bool validate_spi(SPIRestoreCTX* restore_ctx, ConHID::ProdID prod_id){
+        struct ValidationMagic {
+            enum Con {
+                None,
+                JoyL,
+                JoyR,
+                Pro
+            };
+
+            u8 magic[36] = { 
+                0x01, 0x08, 0x00, 0xF0, 0x00,
+                0x00, 0x62, 0x08, 0xC0, 0x5D,
+                0x89, 0xFD, 0x04, 0x00, 0xFF,
+                0xFF, 0xFF, 0xFF, 0x40, 0x06,
+                None, 0xA0, 0x0A, 0xFB, 0x00,
+                0x00, 0x02, 0x0D, 0xAA, 0x55,
+                0xF0, 0x0F, 0x68, 0xE5, 0x97, 0xD2
+            };
+            
+            ValidationMagic(u8 con_type)
+            { magic[20] = con_type; }
+
+            /**
+             * Return true if the spi is valid.
+             */
+            bool validateSPI(u8* backup_spi) {
+                // Check if the backup spi is valid for the controller.
+                if(backup_spi[0x6012] != magic[20]
+                || backup_spi[0x6012 + 1] != magic[21])
+                    return false;
+                
+                for(int i=0; i < 20; i++)
+                    if(magic[i] != backup_spi[i])
+                        return false;
+                
+                bool ota_exists{ true };
+                for(int i=28; i < 36; i++)
+                    if(magic[i] != backup_spi[0x1FF4 + i - 22]){
+                        ota_exists = false;
+                        break;
+                    }
+                
+                if(ota_exists){
+                    for(int i=22; i < 28; i++) {
+                        if(magic[i] != backup_spi[0x10000 + i - 22]
+                        && i != 23)
+                            return false;
+                        if(magic[i] != backup_spi[0x28000 + i - 22]
+                        && i != 23)
+                            return false;
+                    }
+                } else {
+                    for(int i=22; i < 28; i++)
+                        if(magic[i] != backup_spi[0x10000 + i - 22]
+                        && i != 23)
+                            return false;
+                }
+                return true;
+            }
+        };
+        u8 con_type;
+        switch (prod_id)
+        {
+        case ConHID::JoyConLeft:
+            con_type = 1;
+            break;
+        case ConHID::JoyConRight:
+            con_type = 2;
+            break;
+        case ConHID::ProCon:
+            con_type = 3;
+            break;
+        default:
+            return false;
+        }
+        ValidationMagic magic = ValidationMagic(con_type);
+
+        return magic.validateSPI(restore_ctx->backup_spi);
+    }
+
+    bool spi_mac_check(SPIRestoreCTX* restore_ctx){
+        bool mac_check = true;
+        u8 mac_addr[10];
+        memset(mac_addr, 0, sizeof(mac_addr));
+        get_device_info(*restore_ctx->ct, mac_addr);
+
+        for(int i=4; i < 10; i++)
+            if(mac_addr[i] != restore_ctx->backup_spi[0x1A - i + 4])
+                mac_check = false;
+        return mac_check;
+    }
+
+#define RESTORE_NOTIF(type, code) (type | (code << 16))
+#define BREAK_OR_CONTINUE_ON_RESTORE_RES_err(restore_notif_code_err) \
+        if(restore_res != 0){\
+            cb(RESTORE_NOTIF(RestoreProgressError, restore_notif_code_err), opaque_notify);\
+            break;\
+        }
+#define NOTIFY_RESTORE_POINT(restore_notif_code) \
+        cb(RESTORE_NOTIF(RestoreProgressUpdate, restore_notif_code), opaque_notify);
+            
+
+    void spi_restore(CT* ct, ConHID::ProdID prod_id, const char* spi_filepath, restore_notify_cb cb, restore_progress_cb cb_prog, void* opaque_notify, void* opaque_prog) {
+        SPIRestoreCTX restore_ctx;
+        memset(&restore_ctx, 0, sizeof(restore_ctx));
+        restore_ctx.ct = ct;
+
+        FILE* spi_file = fopen(spi_filepath, "rb");
+        if(!spi_file){
+            // Unable to open the file for reading.
+            cb(RESTORE_NOTIF(RestoreError, 1), opaque_notify);
+            return; 
+        }
+
+        fseek(spi_file, 0, SEEK_END);
+        size_t file_size = ftell(spi_file);
+        rewind(spi_file);
+        if(file_size != SPI_SIZE){
+            // The file size is not that of the spi size.
+            cb(RESTORE_NOTIF(RestoreError, 2), opaque_notify);
+            return;
+        }
+
+        size_t bytes_read = fread(restore_ctx.backup_spi, sizeof(u8), SPI_SIZE, spi_file);
+        fclose(spi_file);
+        if(bytes_read != SPI_SIZE){
+            // The bytes read from the file is not that of the spi size.
+            cb(RESTORE_NOTIF(RestoreError, 3), opaque_notify);
+            return;
+        }
+        
+        if(!validate_spi(&restore_ctx, prod_id)){
+            // The spi was not valid for the controller type.
+            cb(RESTORE_NOTIF(RestoreError, 4), opaque_notify);
+            return;
+        }
+
+        // Request the restoration mode.
+        RestoreMode mode = (RestoreMode) cb(RestoreSelectMode, opaque_notify);
+        bool is_same_mac = spi_mac_check(&restore_ctx);
+        bool valid_restore_mode;
+        const int RETRIES_MAX = 5;
+        int retries = 0;
+        while(true) {
+            valid_restore_mode = (mode > Cancel && mode < RestoreModeMax)
+                                 && !(mode == Full && !is_same_mac);
+            if(mode == Cancel){
+                // Restoration canceled.
+                cb(RESTORE_NOTIF(RestoreError, 5), opaque_notify);
+                return;
+            } else
+            if(!valid_restore_mode){
+                if (retries == RETRIES_MAX){
+                    // Too many tries for an invalid restoration mode.
+                    cb(RESTORE_NOTIF(RestoreError, 7), opaque_notify);
+                    return;
+                }
+                // The restore mode method must be valid.
+                // Also, full restore is disabled if the backup does not match the device mac.
+                // Ask again and hope for a different but compatible restore mode or -1 to cancel restore.
+                mode = (RestoreMode) cb(RESTORE_NOTIF(RestoreSelectMode, retries), opaque_notify);
+                retries++;
+            } else
+                // The mode is a different restoration method that isn't Cancel or an invalid mode.
+                break; // Exit the loop and perform the restoration method.
+        }
+
+        int restore_res = 0;
+        cb(RESTORE_NOTIF(RestoreProgressUpdate, RestoreBegin), opaque_notify);
+        cb_prog(0.0f, opaque_prog);
+        switch(mode){
+            case DeviceColors:{
+                u8 backup_color[12];
+                memcpy(backup_color, &restore_ctx.backup_spi[0x6050], sizeof(backup_color));
+                restore_res =  write_spi_data(*restore_ctx.ct, 0x6050, sizeof(backup_color), backup_color);
+                cb_prog(1.0f, opaque_prog);
+            }
+            break;
+            case SerialNumber:{
+                u8 sn[0x10];
+                memcpy(sn, &restore_ctx.backup_spi[0x6000], sizeof(sn));
+                NOTIFY_RESTORE_POINT(RestoreSN)
+                restore_res = write_spi_data(*restore_ctx.ct, 0x6000, sizeof(sn), sn);
+                BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreSN)
+                cb_prog(1.0f, opaque_prog);
+            }
+            break;
+            case UserCalibration:{
+                u8 l_stick[0xB];
+                u8 r_stick[0xB];
+                u8 sensor[0x1A];
+
+                const off_t r_stick_off = 0x8010 + sizeof(l_stick);
+                const off_t sensor_off = r_stick_off + sizeof(r_stick);
+                size_t total_size = sizeof(sensor);
+                size_t prog = 0;
+                switch(prod_id){
+                    case ConHID::ProCon:
+                        total_size += sizeof(l_stick) * 2;
+                    break;
+                    default:
+                        total_size += sizeof(l_stick);
+                    break;
+                }
+
+                memcpy(l_stick, &restore_ctx.backup_spi[0x8010], sizeof(l_stick));
+                memcpy(r_stick, &restore_ctx.backup_spi[r_stick_off], sizeof(r_stick));
+                memcpy(sensor, &restore_ctx.backup_spi[sensor_off], sizeof(sensor));
+
+                if(prod_id != ConHID::JoyConRight) {
+                    NOTIFY_RESTORE_POINT(RestoreLStickCal)
+                    restore_res = write_spi_data(*restore_ctx.ct, 0x8010, sizeof(l_stick), l_stick);
+                    BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreLStickCal)
+                    prog += sizeof(l_stick);
+                    cb_prog((float) prog / total_size, opaque_prog);
+                }
+
+                if(prod_id != ConHID::JoyConLeft) {
+                    NOTIFY_RESTORE_POINT(RestoreRStickCal)
+                    restore_res = write_spi_data(*restore_ctx.ct, r_stick_off, sizeof(r_stick), r_stick);
+                    BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreRStickCal)
+                    prog += sizeof(r_stick);
+                    cb_prog((float) prog / total_size, opaque_prog);
+                }
+                NOTIFY_RESTORE_POINT(RestoreSensorCal)
+                restore_res = write_spi_data(*restore_ctx.ct, sensor_off, sizeof(sensor), sensor);
+                BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreSensorCal)
+                prog += sizeof(sensor);
+                cb_prog((float) prog / total_size, opaque_prog);
+            }
+            break;
+            case OEMReset:{ // Unimplemented.
+                restore_res = -1;
+            }
+            break;
+            case Full:{
+                const size_t FACTORY_CFG_SIZE = 0x1000;
+                const size_t USER_CAL_SIZE = 0x1000;
+                const size_t SN_SIZE = 0x10;
+                const size_t REINIT_SIZE = 0x7 * 3;
+                const size_t TOTAL_SIZE = FACTORY_CFG_SIZE + USER_CAL_SIZE + SN_SIZE + REINIT_SIZE;
+
+                u8 full_restore_buf[0x10];
+                u8 sn_backup_erase[0x10];
+                NOTIFY_RESTORE_POINT(RestoreFactoryCfg)
+                // Factory config 0x6000
+                for(int i=0; i < FACTORY_CFG_SIZE; i += 0x10){
+                    memcpy(full_restore_buf, &restore_ctx.backup_spi[0x6000 + i], sizeof(full_restore_buf));
+                    restore_res = write_spi_data(*restore_ctx.ct, 0x6000 + i, sizeof(full_restore_buf), full_restore_buf);
+                    if(restore_res != 0)
+                        break;
+                    cb_prog((float) i / TOTAL_SIZE, opaque_prog);
+                }
+
+                BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreFactoryCfg)
+                NOTIFY_RESTORE_POINT(RestoreUserCal)
+                // User calibration 0x8000
+                for(int i=0; i < USER_CAL_SIZE; i += 0x10){
+                    memcpy(full_restore_buf, &restore_ctx.backup_spi[0x8000 + i], sizeof(full_restore_buf));
+                    restore_res = write_spi_data(*restore_ctx.ct, 0x8000 + i, sizeof(full_restore_buf), full_restore_buf);
+                    if(restore_res != 0)
+                        break;
+                    cb_prog((float) (i + FACTORY_CFG_SIZE) / TOTAL_SIZE, opaque_prog);
+                }
+                BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreUserCal)
+                NOTIFY_RESTORE_POINT(RestoreSN)
+                // Erase S/N backup storage.
+                restore_res = write_spi_data(*restore_ctx.ct, 0xF000, sizeof(sn_backup_erase), sn_backup_erase);
+                BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreSN)
+                cb_prog((float) (FACTORY_CFG_SIZE + USER_CAL_SIZE + SN_SIZE) / TOTAL_SIZE, opaque_prog);
+
+                NOTIFY_RESTORE_POINT(RestoreReinit)
+                // Set shipment
+                unsigned char custom_cmd[7];
+                memset(custom_cmd, 0, 7);
+                custom_cmd[0] = 0x01;
+                custom_cmd[5] = 0x08;
+                custom_cmd[6] = 0x01;
+                restore_res = send_custom_command(*restore_ctx.ct, custom_cmd);
+                BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreReinit)
+                // Clear pairing info
+                memset(custom_cmd, 0, 7);
+                custom_cmd[0] = 0x01;
+                custom_cmd[5] = 0x07;
+                restore_res = send_custom_command(*restore_ctx.ct, custom_cmd);
+                BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreReinit)
+                // Reboot controller and go into pairing mode
+                memset(custom_cmd, 0, 7);
+                custom_cmd[0] = 0x01;
+                custom_cmd[5] = 0x06;
+                custom_cmd[6] = 0x02;
+                restore_res = send_custom_command(*restore_ctx.ct, custom_cmd);
+                BREAK_OR_CONTINUE_ON_RESTORE_RES_err(RestoreReinit)
+
+                cb_prog((float) (FACTORY_CFG_SIZE + USER_CAL_SIZE + SN_SIZE + REINIT_SIZE) / TOTAL_SIZE, opaque_prog);
+            }
+            break;
+        }
+
+        if(restore_res != 0)
+            cb(RESTORE_NOTIF(RestoreProgressError, RestoreEnd), opaque_notify);
+        else
+            cb(RESTORE_NOTIF(RestoreProgressUpdate, RestoreEnd), opaque_notify);
+    }
+
+    #ifndef __jctool_disable_legacy_ui__
+    int send_custom_command(u8* arg) {
+    #else
+    int send_custom_command(CT& ct, u8* arg){
+        controller_hid_handle_t& handle = ct.handle;
+        u8& timming_byte = ct.timming_byte;
+    #endif
+        int res_write;
+        int res;
+        int byte_seperator = 1;
+    #ifndef __jctool_disable_legacy_ui__
+        String^ input_report_cmd;
+        String^ input_report_sys;
+        String^ output_report_sys;
+    #else
+        std::ostringstream input_report_cmd;
+        std::ostringstream input_report_sys;
+        std::ostringstream output_report_sys;
+    #endif
+        u8 buf_cmd[49];
+        u8 buf_reply[0x170];
+        memset(buf_cmd, 0, sizeof(buf_cmd));
+        memset(buf_reply, 0, sizeof(buf_reply));
+
+        buf_cmd[0] = arg[0]; // cmd
+        buf_cmd[1] = timming_byte & 0xF;
+        timming_byte++;
+        // Vibration pattern
+        buf_cmd[2] = buf_cmd[6] = arg[1];
+        buf_cmd[3] = buf_cmd[7] = arg[2];
+        buf_cmd[4] = buf_cmd[8] = arg[3];
+        buf_cmd[5] = buf_cmd[9] = arg[4];
+
+        buf_cmd[10] = arg[5]; // subcmd
+
+        // subcmd x21 crc byte
+        if (arg[5] == 0x21)
+            arg[43] = MCU::mcu_crc8_calc(arg + 7, 36);
+    #ifndef __jctool_disable_legacy_ui__
+        output_report_sys = String::Format(L"Cmd:  {0:X2}   Subcmd: {1:X2}\r\n", buf_cmd[0], buf_cmd[10]);
+    #else
+        // TODO: Implement else
+        //output_report_sys << "Cmd: " << std::setbase(hex) << buf_cmd[0]
+    #endif
+        if (buf_cmd[0] == 0x01 || buf_cmd[0] == 0x10 || buf_cmd[0] == 0x11) {
+            for (int i = 6; i < 44; i++) {
+                buf_cmd[5 + i] = arg[i];
+    #ifndef __jctool_disable_legacy_ui__
+                output_report_sys += String::Format(L"{0:X2} ", buf_cmd[5 + i]);
+                if (byte_seperator == 4)
+                    output_report_sys += L" ";
+    #else
+                // TODO: Implement else
+    #endif
+                if (byte_seperator == 8) {
+                    byte_seperator = 0;
+    #ifndef __jctool_disable_legacy_ui__
+                    output_report_sys += L"\r\n";
+    #else
+                    // TODO: Implement else
+    #endif
+                }
+                byte_seperator++;
+            }
+        }
+        //Use subcmd after command
+        else {
+            for (int i = 6; i < 44; i++) {
+                buf_cmd[i - 5] = arg[i];
+    #ifndef __jctool_disable_legacy_ui__
+                output_report_sys += String::Format(L"{0:X2} ", buf_cmd[i - 5]);
+                if (byte_seperator == 4)
+                    output_report_sys += L" ";
+    #else
+                // TODO: Implement else
+    #endif
+                if (byte_seperator == 8) {
+                    byte_seperator = 0;
+    #ifndef __jctool_disable_legacy_ui__
+                    output_report_sys += L"\r\n";
+    #else
+                    // TODO: Implement else
+    #endif
+                }
+                byte_seperator++;
+            }
+        }
+    #ifndef __jctool_disable_legacy_ui__
+        FormJoy::myform1->textBoxDbg_sent->Text = output_report_sys;
+    #else
+        // TODO: Implement else
+    #endif
+
+        //Packet size header + subcommand and uint8 argument
+        res_write = hid_write(handle, buf_cmd, sizeof(buf_cmd));
+    #ifndef __jctool_disable_legacy_ui__
+        if (res_write < 0)
+            input_report_sys += L"hid_write failed!\r\n\r\n";
+    #else
+        // TODO: Implement else
+    #endif
+        int retries = 0;
+        while (1) {
+            res = hid_read_timeout(handle, buf_reply, sizeof(buf_reply), 64);
+
+            if (res > 0) {
+                if (arg[0] == 0x01 && buf_reply[0] == 0x21)
+                    break;
+                else if (arg[0] != 0x01)
+                    break;
+            }
+
+            retries++;
+            if (retries == 20)
+                break;
+        }
+        byte_seperator = 1;
+        if (res > 12) {
+            if (buf_reply[0] == 0x21 || buf_reply[0] == 0x30 || buf_reply[0] == 0x33 || buf_reply[0] == 0x31 || buf_reply[0] == 0x3F) {
+    #ifndef __jctool_disable_legacy_ui__
+                input_report_cmd += String::Format(L"\r\nInput report: 0x{0:X2}\r\n", buf_reply[0]);
+                input_report_sys += String::Format(L"Subcmd Reply:\r\n", buf_reply[0]);
+    #else
+                // TODO: Implement else
+    #endif
+                int len = 49;
+                if (buf_reply[0] == 0x33 || buf_reply[0] == 0x31)
+                    len = 362;
+                for (int i = 1; i < 13; i++) {
+    #ifndef __jctool_disable_legacy_ui__
+                    input_report_cmd += String::Format(L"{0:X2} ", buf_reply[i]);
+                    if (byte_seperator == 4)
+                        input_report_cmd += L" ";
+    #else
+                    // TODO: Implement else
+    #endif
+                    if (byte_seperator == 8) {
+                        byte_seperator = 0;
+    #ifndef __jctool_disable_legacy_ui__
+                        input_report_cmd += L"\r\n";
+    #else
+                        // TODO: Implement else
+    #endif
+                    }
+                    byte_seperator++;
+                }
+                byte_seperator = 1;
+                for (int i = 13; i < len; i++) {
+    #ifndef __jctool_disable_legacy_ui__
+                    input_report_sys += String::Format(L"{0:X2} ", buf_reply[i]);
+                    if (byte_seperator == 4)
+                        input_report_sys += L" ";
+    #else
+                    // TODO: Implement else
+    #endif
+                    if (byte_seperator == 8) {
+                        byte_seperator = 0;
+    #ifndef __jctool_disable_legacy_ui__
+                        input_report_sys += L"\r\n";
+    #else
+                        // TODO: Implement else
+    #endif
+                    }
+                    byte_seperator++;
+                }
+                int crc_check_ok = 0;
+                if (arg[5] == 0x21) {
+                    crc_check_ok = (buf_reply[48] == MCU::mcu_crc8_calc(buf_reply + 0xF, 33));
+    #ifndef __jctool_disable_legacy_ui__
+                    if (crc_check_ok)
+                        input_report_sys += L"(CRC OK)";
+                    else
+                        input_report_sys += L"(Wrong CRC)";
+    #else
+                    // TODO: Implement else
+    #endif
+                }
+            }
+            else {
+    #ifndef __jctool_disable_legacy_ui__
+                input_report_sys += String::Format(L"ID: {0:X2} Subcmd reply:\r\n", buf_reply[0]);
+                for (int i = 13; i < res; i++) {
+                    input_report_sys += String::Format(L"{0:X2} ", buf_reply[i]);
+                    if (byte_seperator == 4)
+                        input_report_sys += L" ";
+                    if (byte_seperator == 8) {
+                        byte_seperator = 0;
+                        input_report_sys += L"\r\n";
+                    }
+                    byte_seperator++;
+                }
+    #else
+                // TODO: Implement else
+    #endif
+            }
+        }
+        else if (res > 0 && res <= 12) {
+    #ifndef __jctool_disable_legacy_ui__
+            for (int i = 0; i < res; i++)
+                input_report_sys += String::Format(L"{0:X2} ", buf_reply[i]);
+    #else
+            // TODO: Implement else
+    #endif
+        }
+        else {
+    #ifndef __jctool_disable_legacy_ui__
+            input_report_sys += L"No reply";
+    #else
+            // TODO: Implement else
+    #endif
+        }
+    #ifndef __jctool_disable_legacy_ui__
+        FormJoy::myform1->textBoxDbg_reply->Text = input_report_sys;
+        FormJoy::myform1->textBoxDbg_reply_cmd->Text = input_report_cmd;
+    #else
+        // TODO: Implement else
+    #endif
+
+        return 0;
+    }
+
 
     /**
      * ===========================================================================

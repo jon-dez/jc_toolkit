@@ -115,6 +115,7 @@ public:
     void dumpSPI(const std::string& to_file, bool& is_dumping, size_t& bytes_dumped, bool& cancel_spi_dump);
 
     void writeColorsToSPI(const SPIColors& colors);
+    void restoreSPI(const std::string& spi_filepath, std::function<int(int notif)> cb, std::function<void(float progress)> cb_prog);
 
     void setPlayerLEDs(LEDs::LEDFlags led_flags);
 private:
