@@ -25,10 +25,13 @@ TODOS:
     - [x] IR Camera Capture/Stream
     
   - [ ] User Calibration and Stick Device Parameters
+  - [x] Backup and Restore Device SPI
 
 **Alpha API** with ImGui Screen shot:
 
 ![](./screenshots/jctoolkit_4.png)
+![](./screenshots/jctoolkit_3.png)
+![](./screenshots/jctoolkit_2.png)
 
 [More Screenshots Here](./screenshots/screenshots.md)
 
