@@ -35,7 +35,29 @@ TODOS:
 
 [More Screenshots Here](./screenshots/screenshots.md)
 
-Build the project with with CMake to get the above result.
+Clone the repository, then initialize the submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+Build the project with with CMake
+
+```bash
+./scripts/build.sh
+```
+
+Run the executable
+
+```bash
+./build/JCToolKit
+```
+
+If you need to clean the build output
+
+```bash
+./scripts/build.sh -c
+```
 
 Add the following line after the project() declaration to build the project with CMake as API only:
 ```
@@ -44,6 +66,13 @@ set(JCTOOL_API_ONLY TRUE) # Add this line.
 # add_subdirectory(jc_toolkit)
 ```
 ### A note for linux users (Important)
+
+Debian:
+
+```
+# install dependencies
+sudo apt-get install cmake libhidapi-dev libudev-dev libglfw3-dev
+```
 
 You must have valid udev rules in order for Joy-Con Toolkit to detect your controllers.
 Follow the steps below if you need the valid udev rules.
