@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  jctoolkit-appimage:
+    build:
+      context: ..
+      dockerfile: packaging/Dockerfile.appimage
+    environment:
+      - CLEAN_BUILD=${CLEAN_BUILD:-}
+    volumes:
+      - ..:/workspace:rw
+      - ../dist:/workspace/dist:rw
+    working_dir: /workspace
+    command: ["/bin/bash", "-lc", "./scripts/package_appimage.sh"]

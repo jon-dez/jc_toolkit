@@ -105,3 +105,27 @@ This image is for reference.
 **Protocol and hidapi usage in Linux**: https://github.com/shinyquagsire23/HID-Joy-Con-Whispering
 
 **In windows**: https://github.com/shuffle2/nxpad
+
+## Building a Linux AppImage
+
+To build a portable AppImage of JCToolKit on Linux, you need Docker and docker-compose (v2).
+
+From the repository root, run:
+
+```bash
+docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
+```
+
+If you see a Docker API version error, try:
+
+```bash
+DOCKER_API_VERSION=1.44 docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
+```
+
+The resulting `JCToolKit-x86_64.AppImage` is written to `dist/` at the repository root. The build is incremental by default. For a clean rebuild either pass the env var or the script flag:
+
+```bash
+CLEAN_BUILD=1 docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
+# or
+docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage -- ./scripts/package_appimage.sh --clean
+```

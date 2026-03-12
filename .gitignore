@@ -294,3 +294,6 @@ imgui.ini
 out
 CMakeSettings.json
 *.bin
+
+/.cache
+/dist
