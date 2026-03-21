@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+  <id>com.jon_dez.jc_toolkit</id>
+  <name>Joy-Con Toolkit</name>
+  <summary>Controller inspection and configuration toolkit</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+
+  <description>
+    <p>
+      Joy-Con Toolkit is a desktop utility for inspecting, monitoring, and configuring
+      supported game controllers. It provides live device information, battery
+      and temperature readouts, color configuration tools, rumble playback, IR
+      capture, and backup/restore of device state.
+    </p>
+  </description>
+
+  <project_license>MIT</project_license>
+
+  <categories>
+    <category>Utility</category>
+    <category>Game</category>
+  </categories>
+
+  <content_rating type="oars-1.1"/>
+
+  <url type="homepage">https://github.com/jon-dez/jc_toolkit</url>
+
+  <developer id="com.jon-dez">
+    <name>jon-dez</name>
+  </developer>
+
+  <launchable type="desktop-id">com.jon_dez.jc_toolkit.desktop</launchable>
+</component>

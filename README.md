@@ -67,11 +67,16 @@ set(JCTOOL_API_ONLY TRUE) # Add this line.
 ```
 ### A note for linux users (Important)
 
-Debian:
+Debian/Ubuntu:
 
 ```
-# install dependencies
 sudo apt-get install cmake libhidapi-dev libudev-dev libglfw3-dev
+```
+
+Fedora:
+
+```
+sudo dnf install cmake hidapi-devel systemd-devel glfw-devel
 ```
 
 You must have valid udev rules in order for Joy-Con Toolkit to detect your controllers.
@@ -105,3 +110,19 @@ This image is for reference.
 **Protocol and hidapi usage in Linux**: https://github.com/shinyquagsire23/HID-Joy-Con-Whispering
 
 **In windows**: https://github.com/shuffle2/nxpad
+
+## Building a Linux AppImage
+
+To build a portable AppImage of JCToolKit on Linux, you need Docker and docker-compose (v2).
+
+From the repository root, run:
+
+```bash
+docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
+```
+
+The resulting `JCToolKit-x86_64.AppImage` is written to `dist/` at the repository root. The Docker build does a clean build by default (required because host and container paths differ). To skip the clean step for faster iteration:
+
+```bash
+CLEAN_BUILD=0 docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
+```

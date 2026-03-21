@@ -1,0 +1,33 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    ninja-build \
+    file \
+    git \
+    libhidapi-dev \
+    libudev-dev \
+    libglfw3-dev \
+    ca-certificates \
+    wget \
+    fuse \
+    appstream \
+    librsvg2-bin \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Install appimagetool
+RUN mkdir -p /opt/appimage && \
+    wget -O /opt/appimage/appimagetool-x86_64.AppImage \
+      https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage && \
+    chmod +x /opt/appimage/appimagetool-x86_64.AppImage
+
+ENV PATH="/opt/appimage:${PATH}"
+
+# Default command: run the packaging script inside the mounted repo
+CMD ["/bin/bash", "-lc", "cd /workspace && ./scripts/package_appimage.sh"]
+

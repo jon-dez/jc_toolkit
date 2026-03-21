@@ -1,0 +1,13 @@
+services:
+  jctoolkit-appimage:
+    build:
+      context: ..
+      dockerfile: packaging/Dockerfile.appimage
+    environment:
+      # Always clean build in container: host build dir has wrong paths (/home/... vs /workspace)
+      - CLEAN_BUILD=${CLEAN_BUILD:-1}
+    volumes:
+      - ..:/workspace:rw
+      - ../dist:/workspace/dist:rw
+    working_dir: /workspace
+    command: ["/bin/bash", "-lc", "./scripts/package_appimage.sh"]

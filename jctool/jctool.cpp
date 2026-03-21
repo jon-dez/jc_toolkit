@@ -312,8 +312,9 @@ int main(int argc, char** args) {
     ImGuiMain(
         {
             window_name, // The window title.
-            640, // The window width.
-            480 // The window height.
+            640,        // The window width.
+            480,        // The window height.
+            "JCToolKit" // WM class for desktop integration (StartupWMClass in .desktop)
         },
         imgui_calls,
         JCToolkit::init,
