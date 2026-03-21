@@ -116,12 +116,6 @@ From the repository root, run:
 docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
 ```
 
-If you see a Docker API version error, try:
-
-```bash
-DOCKER_API_VERSION=1.44 docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
-```
-
 The resulting `JCToolKit-x86_64.AppImage` is written to `dist/` at the repository root. The build is incremental by default. For a clean rebuild either pass the env var or the script flag:
 
 ```bash

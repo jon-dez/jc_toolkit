@@ -53,11 +53,17 @@ fi
 
 ICON_SRC_SVG="$REPO_ROOT/packaging/assets/JCToolKit.svg"
 ICON_DEST_ROOT_SVG="$APPDIR/JCToolKit.svg"
+ICON_DEST_ROOT_PNG="$APPDIR/JCToolKit.png"
 ICON_DEST_SCALABLE_SVG="$APPDIR/usr/share/icons/hicolor/scalable/apps/JCToolKit.svg"
+ICON_DEST_256_PNG="$APPDIR/usr/share/icons/hicolor/256x256/apps/JCToolKit.png"
 if [[ -f "$ICON_SRC_SVG" ]]; then
-  mkdir -p "$(dirname "$ICON_DEST_SCALABLE_SVG")"
+  mkdir -p "$(dirname "$ICON_DEST_SCALABLE_SVG")" "$(dirname "$ICON_DEST_256_PNG")"
   cp "$ICON_SRC_SVG" "$ICON_DEST_ROOT_SVG"
   cp "$ICON_SRC_SVG" "$ICON_DEST_SCALABLE_SVG"
+  if command -v rsvg-convert >/dev/null 2>&1; then
+    rsvg-convert -w 256 -h 256 -o "$ICON_DEST_256_PNG" "$ICON_SRC_SVG"
+    cp "$ICON_DEST_256_PNG" "$ICON_DEST_ROOT_PNG"
+  fi
 else
   echo "Warning: icon $ICON_SRC_SVG not found; no application icon will be bundled" >&2
 fi
@@ -86,12 +92,12 @@ Categories=Utility;
 Terminal=false
 EOF
 
-APPDATA_ID="com._jon_dez.jctoolkit"
+APPDATA_ID="com.jon_dez.jc_toolkit"
 cp "$DESKTOP_FILE" "$APPDIR/usr/share/applications/${APPDATA_ID}.desktop"
 
 echo ">> Writing AppStream metadata..."
-APPDATA_SRC="$REPO_ROOT/packaging/metainfo/JCToolKit.appdata.xml"
-APPDATA_DEST="$APPDIR/usr/share/metainfo/${APPDATA_ID}.appdata.xml"
+APPDATA_SRC="$REPO_ROOT/packaging/metainfo.xml"
+APPDATA_DEST="$APPDIR/usr/share/metainfo/${APPDATA_ID}.metainfo.xml"
 if [[ -f "$APPDATA_SRC" ]]; then
   cp "$APPDATA_SRC" "$APPDATA_DEST"
 else

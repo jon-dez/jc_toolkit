@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop">
-  <id>com._jon_dez.jctoolkit</id>
+  <id>com.jon_dez.jc_toolkit</id>
   <name>Joy-Con Toolkit</name>
   <summary>Controller inspection and configuration toolkit</summary>
 
@@ -30,5 +30,5 @@
     <name>jon-dez</name>
   </developer>
 
-  <launchable type="desktop-id">com._jon_dez.jctoolkit.desktop</launchable>
+  <launchable type="desktop-id">com.jon_dez.jc_toolkit.desktop</launchable>
 </component>
