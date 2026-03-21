@@ -67,11 +67,16 @@ set(JCTOOL_API_ONLY TRUE) # Add this line.
 ```
 ### A note for linux users (Important)
 
-Debian:
+Debian/Ubuntu:
 
 ```
-# install dependencies
 sudo apt-get install cmake libhidapi-dev libudev-dev libglfw3-dev
+```
+
+Fedora:
+
+```
+sudo dnf install cmake hidapi-devel systemd-devel glfw-devel
 ```
 
 You must have valid udev rules in order for Joy-Con Toolkit to detect your controllers.
@@ -116,10 +121,8 @@ From the repository root, run:
 docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
 ```
 
-The resulting `JCToolKit-x86_64.AppImage` is written to `dist/` at the repository root. The build is incremental by default. For a clean rebuild either pass the env var or the script flag:
+The resulting `JCToolKit-x86_64.AppImage` is written to `dist/` at the repository root. The Docker build does a clean build by default (required because host and container paths differ). To skip the clean step for faster iteration:
 
 ```bash
-CLEAN_BUILD=1 docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
-# or
-docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage -- ./scripts/package_appimage.sh --clean
+CLEAN_BUILD=0 docker compose -f packaging/docker-compose.appimage.yml run --rm jctoolkit-appimage
 ```
